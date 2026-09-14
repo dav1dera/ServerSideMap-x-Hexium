@@ -4,6 +4,8 @@ set -Eeuo pipefail
 SSM_REPO="https://github.com/Mydayyy/Valheim-ServerSideMap.git"
 SSM_COMMIT="05876ad69e3de25c225740c24f5f0dde155128c5"
 SSM_VERSION="1.3.14"
+SSM_PACKAGE_VERSION="1.3.14"
+SSM_PACKAGE_REVISION="0"
 BEPINEX_VERSION="5.4.2350"
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -137,7 +139,8 @@ fi
 
 BUILT="$SRC/ServerSideMap/bin/Release/ServerSideMap.dll"
 
-echo "Compiling ServerSideMap $SSM_VERSION ($SSM_COMMIT) with Roslyn $SDK_VERSION"
+echo "Compiling ServerSideMap upstream $SSM_VERSION ($SSM_COMMIT) with Roslyn $SDK_VERSION"
+echo "Hexium package version: $SSM_PACKAGE_VERSION (revision $SSM_PACKAGE_REVISION)"
 echo "Valheim/BepInEx references: ${#refs[@]}"
 echo "Upstream C# sources: ${#sources[@]}"
 
@@ -161,5 +164,6 @@ fi
 cp -f "$BUILT" "$OUT"
 cp -f "$SRC/LICENSE-MIT" "$LICENSE_OUT"
 
-printf 'Built ServerSideMap %s from %s\n' "$SSM_VERSION" "$SSM_COMMIT"
+printf 'Built ServerSideMap upstream %s from %s as Hexium %s\n' \
+  "$SSM_VERSION" "$SSM_COMMIT" "$SSM_PACKAGE_VERSION"
 sha256sum "$OUT"
