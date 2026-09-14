@@ -29,9 +29,9 @@ USER_AGENT = "dav1dera-serversidemap-publisher"
 
 def current_version() -> str:
     text = BUILD_SCRIPT.read_text(encoding="utf-8")
-    match = re.search(r'^SSM_VERSION="([^"]+)"$', text, re.MULTILINE)
+    match = re.search(r'^SSM_PACKAGE_VERSION="([^"]+)"$', text, re.MULTILINE)
     if not match:
-        raise SystemExit("Could not read SSM_VERSION from build script")
+        raise SystemExit("Could not read SSM_PACKAGE_VERSION from build script")
     return match.group(1)
 
 
