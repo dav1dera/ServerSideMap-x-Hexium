@@ -30,13 +30,18 @@ jobs:
         run: |
           set -euo pipefail
 
+          BUILD_SCRIPT="scripts/build-serversidemap-1.0.sh"
           UPSTREAM_REPO="https://github.com/Mydayyy/Valheim-ServerSideMap.git"
-          CURRENT_COMMIT="$(sed -n 's/^SSM_COMMIT="\([0-9a-f]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
-          CURRENT_VERSION="$(sed -n 's/^SSM_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          CURRENT_COMMIT="$(sed -n 's/^SSM_COMMIT="\([0-9a-f]\+\)"/\1/p' "$BUILD_SCRIPT")"
+          CURRENT_VERSION="$(sed -n 's/^SSM_VERSION="\([^"]\+\)"/\1/p' "$BUILD_SCRIPT")"
+          CURRENT_PACKAGE_VERSION="$(sed -n 's/^SSM_PACKAGE_VERSION="\([^"]\+\)"/\1/p' "$BUILD_SCRIPT")"
+          CURRENT_REVISION="$(sed -n 's/^SSM_PACKAGE_REVISION="\([0-9]\+\)"/\1/p' "$BUILD_SCRIPT")"
           UPSTREAM_COMMIT="$(git ls-remote "$UPSTREAM_REPO" refs/heads/master | awk '{print $1}')"
 
           test -n "$CURRENT_COMMIT"
           test -n "$CURRENT_VERSION"
+          test -n "$CURRENT_PACKAGE_VERSION"
+          test -n "$CURRENT_REVISION"
           test -n "$UPSTREAM_COMMIT"
 
           TMP="${RUNNER_TEMP}/serversidemap-upstream"
@@ -78,16 +83,19 @@ jobs:
 
           echo "current_commit=$CURRENT_COMMIT" >> "$GITHUB_OUTPUT"
           echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "current_package_version=$CURRENT_PACKAGE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "current_revision=$CURRENT_REVISION" >> "$GITHUB_OUTPUT"
           echo "upstream_commit=$UPSTREAM_COMMIT" >> "$GITHUB_OUTPUT"
           echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
           echo "changed=$changed" >> "$GITHUB_OUTPUT"
           echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
 
-          echo "Current:  $CURRENT_VERSION $CURRENT_COMMIT"
-          echo "Upstream: $UPSTREAM_VERSION $UPSTREAM_COMMIT"
-          echo "Changed:  $changed"
+          echo "Current upstream: $CURRENT_VERSION $CURRENT_COMMIT"
+          echo "Current Hexium:   $CURRENT_PACKAGE_VERSION (revision $CURRENT_REVISION)"
+          echo "Latest upstream:  $UPSTREAM_VERSION $UPSTREAM_COMMIT"
+          echo "Changed:          $changed"
 
-      - name: Update candidate pin
+      - name: Update candidate pin and Hexium version
         if: steps.detect.outputs.changed == 'true'
         shell: bash
         env:
@@ -101,23 +109,58 @@ jobs:
 
           path = Path('scripts/build-serversidemap-1.0.sh')
           text = path.read_text(encoding='utf-8')
-          text, n_commit = re.subn(
-              r'^SSM_COMMIT="[0-9a-f]+"$',
-              f'SSM_COMMIT="{os.environ["NEW_COMMIT"]}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
+
+          def read(pattern: str, label: str) -> str:
+              match = re.search(pattern, text, re.MULTILINE)
+              if not match:
+                  raise SystemExit(f'Could not read {label}')
+              return match.group(1)
+
+          old_upstream_version = read(r'^SSM_VERSION="([^"]+)"$', 'SSM_VERSION')
+          old_revision = int(read(r'^SSM_PACKAGE_REVISION="(\d+)"$', 'SSM_PACKAGE_REVISION'))
+          new_upstream_version = os.environ['NEW_VERSION']
+          new_commit = os.environ['NEW_COMMIT']
+
+          if new_upstream_version == old_upstream_version:
+              revision = old_revision + 1
+          else:
+              revision = 0
+
+          if revision > 999:
+              raise SystemExit('Too many same-upstream rebuilds; revision exceeded 999')
+
+          version_match = re.fullmatch(
+              r'(\d+)\.(\d+)\.(\d+)(?:-(alpha|beta|rc)\.(\d+))?',
+              new_upstream_version,
           )
-          text, n_version = re.subn(
-              r'^SSM_VERSION="[^"]+"$',
-              f'SSM_VERSION="{os.environ["NEW_VERSION"]}"',
-              text,
-              count=1,
-              flags=re.MULTILINE,
-          )
-          if n_commit != 1 or n_version != 1:
-              raise SystemExit('Could not update ServerSideMap pin')
+          if not version_match:
+              raise SystemExit(f'Unsupported upstream version: {new_upstream_version}')
+
+          major, minor, patch, prerelease, prerelease_no = version_match.groups()
+          if prerelease:
+              encoded_prerelease = int(prerelease_no) * 1000 + revision
+              package_version = f'{major}.{minor}.{patch}-{prerelease}.{encoded_prerelease}'
+          elif revision == 0 and int(patch) == 0:
+              package_version = f'{major}.{minor}.0'
+          else:
+              encoded_patch = int(patch) * 1000 + revision
+              package_version = f'{major}.{minor}.{encoded_patch}'
+
+          replacements = [
+              (r'^SSM_COMMIT="[0-9a-f]+"$', f'SSM_COMMIT="{new_commit}"'),
+              (r'^SSM_VERSION="[^"]+"$', f'SSM_VERSION="{new_upstream_version}"'),
+              (r'^SSM_PACKAGE_VERSION="[^"]+"$', f'SSM_PACKAGE_VERSION="{package_version}"'),
+              (r'^SSM_PACKAGE_REVISION="\d+"$', f'SSM_PACKAGE_REVISION="{revision}"'),
+          ]
+
+          for pattern, replacement in replacements:
+              text, count = re.subn(pattern, replacement, text, count=1, flags=re.MULTILINE)
+              if count != 1:
+                  raise SystemExit(f'Could not update pin: {pattern}')
+
           path.write_text(text, encoding='utf-8')
+          print(f'Upstream: {new_upstream_version} {new_commit}')
+          print(f'Hexium package: {package_version} (revision {revision})')
           PY
 
       - name: Build ServerSideMap against current Valheim
@@ -131,7 +174,7 @@ jobs:
         shell: bash
         run: |
           python3 scripts/package-serversidemap-hexium.py
-          VERSION="$(sed -n 's/^SSM_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          VERSION="$(sed -n 's/^SSM_PACKAGE_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
           test -n "$VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           test -s "dist/hexium/ServerSideMap_Valheim1Fix-${VERSION}-hexium.zip"
@@ -170,10 +213,13 @@ jobs:
           NEW_COMMIT: ${{ steps.detect.outputs.upstream_commit }}
         run: |
           set -euo pipefail
+          PACKAGE_VERSION="$(sed -n 's/^SSM_PACKAGE_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          REVISION="$(sed -n 's/^SSM_PACKAGE_REVISION="\([0-9]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add scripts/build-serversidemap-1.0.sh
           git diff --cached --quiet && exit 0
-          git commit -m "chore(serversidemap): track Mydayyy ${NEW_VERSION}"
+          git commit -m "chore(serversidemap): track Mydayyy ${NEW_VERSION} as ${PACKAGE_VERSION}"
           git push origin HEAD:main
           echo "Pinned tested ServerSideMap ${NEW_VERSION} at ${NEW_COMMIT}"
+          echo "Hexium package ${PACKAGE_VERSION}, same-upstream revision ${REVISION}"
