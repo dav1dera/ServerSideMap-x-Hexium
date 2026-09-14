@@ -18,15 +18,23 @@ BUILD_DIR = ROOT / "dist" / "build"
 DIST = ROOT / "dist" / "hexium"
 PACKAGE_NAME = "ServerSideMap_Valheim1Fix"
 UPSTREAM_URL = "https://github.com/Mydayyy/Valheim-ServerSideMap"
+SOURCE_URL = "https://github.com/dav1dera/ServerSideMap-x-Hexium"
 
 
-def read_pin() -> tuple[str, str]:
+def read_pin() -> tuple[str, str, str, int]:
     text = BUILD_SCRIPT.read_text(encoding="utf-8")
-    version = re.search(r'^SSM_VERSION="([^"]+)"$', text, re.MULTILINE)
+    upstream_version = re.search(r'^SSM_VERSION="([^"]+)"$', text, re.MULTILINE)
+    package_version = re.search(r'^SSM_PACKAGE_VERSION="([^"]+)"$', text, re.MULTILINE)
     commit = re.search(r'^SSM_COMMIT="([0-9a-f]+)"$', text, re.MULTILINE)
-    if not version or not commit:
-        raise SystemExit("Could not read ServerSideMap version/commit pin")
-    return version.group(1), commit.group(1)
+    revision = re.search(r'^SSM_PACKAGE_REVISION="(\d+)"$', text, re.MULTILINE)
+    if not upstream_version or not package_version or not commit or not revision:
+        raise SystemExit("Could not read ServerSideMap upstream/package pin")
+    return (
+        upstream_version.group(1),
+        package_version.group(1),
+        commit.group(1),
+        int(revision.group(1)),
+    )
 
 
 def png_chunk(kind: bytes, data: bytes) -> bytes:
@@ -70,7 +78,7 @@ def make_icon(path: Path) -> None:
 
 
 def main() -> None:
-    version, commit = read_pin()
+    upstream_version, package_version, commit, revision = read_pin()
     dll = BUILD_DIR / "ServerSideMap.dll"
     license_file = BUILD_DIR / "LICENSE-MIT"
     if not dll.is_file() or dll.stat().st_size == 0:
@@ -78,8 +86,8 @@ def main() -> None:
     if not license_file.is_file():
         raise SystemExit("ServerSideMap MIT license is missing")
 
-    package_dir = DIST / f"{PACKAGE_NAME}-{version}"
-    zip_path = DIST / f"{PACKAGE_NAME}-{version}-hexium.zip"
+    package_dir = DIST / f"{PACKAGE_NAME}-{package_version}"
+    zip_path = DIST / f"{PACKAGE_NAME}-{package_version}-hexium.zip"
     if package_dir.exists():
         shutil.rmtree(package_dir)
     DIST.mkdir(parents=True, exist_ok=True)
@@ -95,8 +103,8 @@ def main() -> None:
             "Unofficial Valheim 1.0 compatibility build of Mydayyy's ServerSideMap, "
             "compiled from unmodified upstream source. Install on server and client."
         ),
-        "version_number": version,
-        "website_url": UPSTREAM_URL,
+        "version_number": package_version,
+        "website_url": SOURCE_URL,
         "dependencies": [],
     }
     (package_dir / "manifest.json").write_text(
@@ -107,9 +115,12 @@ def main() -> None:
 
 This is an unofficial compatibility build of Mydayyy's ServerSideMap for current Valheim 1.0.
 
+- Automation/source: {SOURCE_URL}
 - Original project: {UPSTREAM_URL}
 - Upstream author: Mydayyy
-- Upstream version: {version}
+- Upstream version: {upstream_version}
+- Hexium package version: {package_version}
+- Same-upstream revision: {revision}
 - Upstream commit: `{commit}`
 - License: MIT (included as `LICENSE-MIT`)
 
@@ -125,8 +136,10 @@ Config file: `BepInEx/config/eu.mydayyy.plugins.serversidemap.cfg`
 
     changelog = f"""# Changelog
 
-## {version}
+## {package_version}
 
+- Upstream ServerSideMap version: {upstream_version}.
+- Same-upstream revision: {revision}.
 - Built from Mydayyy/Valheim-ServerSideMap commit `{commit}`.
 - Compiled against the current public Valheim dedicated-server assemblies.
 - No ServerSideMap source-code modifications.
@@ -148,7 +161,9 @@ Config file: `BepInEx/config/eu.mydayyy.plugins.serversidemap.cfg`
         raise SystemExit(f"Hexium package missing required files: {sorted(missing)}")
 
     print(f"Hexium package ready: {zip_path}")
-    print(f"ServerSideMap version: {version}")
+    print(f"Upstream ServerSideMap version: {upstream_version}")
+    print(f"Hexium package version: {package_version}")
+    print(f"Same-upstream revision: {revision}")
     print(f"Upstream commit: {commit}")
 
 
