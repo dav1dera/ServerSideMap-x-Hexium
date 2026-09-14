@@ -1,0 +1,179 @@
+name: Sync ServerSideMap
+
+on:
+  schedule:
+    - cron: "47 */6 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: serversidemap-maintenance
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Detect upstream ServerSideMap state
+        id: detect
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          set -euo pipefail
+
+          UPSTREAM_REPO="https://github.com/Mydayyy/Valheim-ServerSideMap.git"
+          CURRENT_COMMIT="$(sed -n 's/^SSM_COMMIT="\([0-9a-f]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          CURRENT_VERSION="$(sed -n 's/^SSM_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          UPSTREAM_COMMIT="$(git ls-remote "$UPSTREAM_REPO" refs/heads/master | awk '{print $1}')"
+
+          test -n "$CURRENT_COMMIT"
+          test -n "$CURRENT_VERSION"
+          test -n "$UPSTREAM_COMMIT"
+
+          TMP="${RUNNER_TEMP}/serversidemap-upstream"
+          rm -rf "$TMP"
+          git clone --quiet "$UPSTREAM_REPO" "$TMP"
+          git -C "$TMP" checkout --quiet "$UPSTREAM_COMMIT"
+
+          UPSTREAM_VERSION="$(python3 - "$TMP/ServerSideMap/ServerSideMap.cs" <<'PY'
+          import re
+          import sys
+          from pathlib import Path
+
+          text = Path(sys.argv[1]).read_text(encoding='utf-8-sig')
+          match = re.search(
+              r'BepInPlugin\(\s*"eu\.mydayyy\.plugins\.serversidemap"\s*,\s*"ServerSideMap"\s*,\s*"([^"]+)"\s*\)',
+              text,
+          )
+          if not match:
+              raise SystemExit('Could not determine ServerSideMap BepInPlugin version')
+          version = match.group(1)
+          parts = version.split('.')
+          if len(parts) > 3 and all(part == '0' for part in parts[3:]):
+              version = '.'.join(parts[:3])
+          if not re.fullmatch(r'\d+\.\d+\.\d+(?:-(?:alpha|beta|rc)\.\d+)?', version):
+              raise SystemExit(f'Unsupported Hexium package version format: {version}')
+          print(version)
+          PY
+          )"
+
+          changed=false
+          if [[ "$UPSTREAM_COMMIT" != "$CURRENT_COMMIT" ]]; then
+            changed=true
+          fi
+
+          should_build=false
+          if [[ "$changed" == true || "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            should_build=true
+          fi
+
+          echo "current_commit=$CURRENT_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "current_version=$CURRENT_VERSION" >> "$GITHUB_OUTPUT"
+          echo "upstream_commit=$UPSTREAM_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "upstream_version=$UPSTREAM_VERSION" >> "$GITHUB_OUTPUT"
+          echo "changed=$changed" >> "$GITHUB_OUTPUT"
+          echo "should_build=$should_build" >> "$GITHUB_OUTPUT"
+
+          echo "Current:  $CURRENT_VERSION $CURRENT_COMMIT"
+          echo "Upstream: $UPSTREAM_VERSION $UPSTREAM_COMMIT"
+          echo "Changed:  $changed"
+
+      - name: Update candidate pin
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash
+        env:
+          NEW_VERSION: ${{ steps.detect.outputs.upstream_version }}
+          NEW_COMMIT: ${{ steps.detect.outputs.upstream_commit }}
+        run: |
+          python3 - <<'PY'
+          import os
+          import re
+          from pathlib import Path
+
+          path = Path('scripts/build-serversidemap-1.0.sh')
+          text = path.read_text(encoding='utf-8')
+          text, n_commit = re.subn(
+              r'^SSM_COMMIT="[0-9a-f]+"$',
+              f'SSM_COMMIT="{os.environ["NEW_COMMIT"]}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          text, n_version = re.subn(
+              r'^SSM_VERSION="[^"]+"$',
+              f'SSM_VERSION="{os.environ["NEW_VERSION"]}"',
+              text,
+              count=1,
+              flags=re.MULTILINE,
+          )
+          if n_commit != 1 or n_version != 1:
+              raise SystemExit('Could not update ServerSideMap pin')
+          path.write_text(text, encoding='utf-8')
+          PY
+
+      - name: Build ServerSideMap against current Valheim
+        if: steps.detect.outputs.should_build == 'true'
+        shell: bash
+        run: bash scripts/build-serversidemap-1.0.sh
+
+      - name: Package for Hexium
+        if: steps.detect.outputs.should_build == 'true'
+        id: package
+        shell: bash
+        run: |
+          python3 scripts/package-serversidemap-hexium.py
+          VERSION="$(sed -n 's/^SSM_VERSION="\([^"]\+\)"/\1/p' scripts/build-serversidemap-1.0.sh)"
+          test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          test -s "dist/hexium/ServerSideMap_Valheim1Fix-${VERSION}-hexium.zip"
+          sha256sum dist/build/ServerSideMap.dll
+
+      - name: Upload package artifact
+        if: steps.detect.outputs.should_build == 'true'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ServerSideMap_Valheim1Fix-${{ steps.package.outputs.version }}-hexium
+          path: dist/hexium/ServerSideMap_Valheim1Fix-${{ steps.package.outputs.version }}-hexium.zip
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Publish to Hexium
+        if: steps.detect.outputs.should_build == 'true'
+        shell: bash
+        env:
+          HEXIUM_TOKEN: ${{ secrets.HEXIUM_TOKEN }}
+          HEXIUM_TEAM: Sgorbi
+          HEXIUM_PACKAGE: ServerSideMap_Valheim1Fix
+          HEXIUM_COMMUNITY: valheim
+          HEXIUM_CATEGORIES: Valheim 1.0
+        run: |
+          if [[ -z "$HEXIUM_TOKEN" ]]; then
+            echo "HEXIUM_TOKEN is not configured; skipping Hexium publish."
+            exit 0
+          fi
+          python3 scripts/publish-serversidemap-hexium.py
+
+      - name: Commit tested upstream pin
+        if: steps.detect.outputs.changed == 'true'
+        shell: bash
+        env:
+          NEW_VERSION: ${{ steps.detect.outputs.upstream_version }}
+          NEW_COMMIT: ${{ steps.detect.outputs.upstream_commit }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add scripts/build-serversidemap-1.0.sh
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(serversidemap): track Mydayyy ${NEW_VERSION}"
+          git push origin HEAD:main
+          echo "Pinned tested ServerSideMap ${NEW_VERSION} at ${NEW_COMMIT}"
