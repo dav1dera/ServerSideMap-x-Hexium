@@ -14,6 +14,16 @@ This repository is independent from Vikinger Panel and contains only the ServerS
 - uploads the ZIP as a GitHub Actions artifact;
 - publishes new versions to Hexium as `Sgorbi/ServerSideMap_Valheim1Fix` when `HEXIUM_TOKEN` is configured.
 
+## Hexium versioning
+
+Hexium package versions are tracked separately from the internal ServerSideMap plugin version.
+
+The already-published compatibility build remains `1.3.14`. If Mydayyy pushes another commit while the plugin still reports `1.3.14`, the automation increments a same-upstream revision and publishes a newer valid Hexium version such as `1.3.14001`, then `1.3.14002`, and so on.
+
+When the upstream patch changes, its patch number gets its own numeric range. For example, upstream `1.3.15` starts at Hexium package version `1.3.15000`. This keeps Hexium versions monotonic while preserving the exact upstream version, commit and compatibility-build revision inside the package README/changelog.
+
+The automation allows up to 999 same-upstream revisions before requiring a versioning-policy change.
+
 ## Files
 
 - `.github/workflows/sync-serversidemap.yml` — update/build/package/publish workflow.
